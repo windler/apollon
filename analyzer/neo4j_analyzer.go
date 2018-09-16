@@ -1,30 +1,36 @@
 package analyzer
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/jmcvetta/neoism"
 	cachegrind "github.com/windler/go-cachegrind"
+	neo4j "github.com/windler/go-neo4j-cypher"
 )
 
 type Neo4jAnalyzer struct {
 	Password, User string
-	Port           int
+	Port           int64
 	Host           string
 	Scheme         string
 	nodeCacheFn    map[string]cachegrind.Function
 	nodeCacheFile  map[string]cachegrind.Function
+	db             neo4j.CypherClient
+}
+
+type CypherResult struct {
+	From []struct {
+		Name string `json:"from"`
+	} `json:"r"`
 }
 
 func (a *Neo4jAnalyzer) Init(c cachegrind.Cachegrind) {
 	a.nodeCacheFn = map[string]cachegrind.Function{}
 	a.nodeCacheFile = map[string]cachegrind.Function{}
 
-	url := fmt.Sprintf("%s://%s:%s@%s:%d/db/data", a.Scheme, a.User, a.Password, a.Host, a.Port)
-	db, _ := neoism.Connect(url)
+	a.db = neo4j.NewHTTPCypherClient(a.Scheme, a.Host, a.Port, a.User, a.Password)
 
-	a.runCypher(db, `MATCH (n:function) DETACH DELETE n`, nil)
+	a.runCypher(`MATCH (n:function) DETACH DELETE n`, nil)
 	//a.runCypher(db, `MATCH (n:file) DETACH DELETE n`, nil)
 
 	main := c.GetMainFunction()
@@ -39,40 +45,59 @@ func (a *Neo4jAnalyzer) Init(c cachegrind.Cachegrind) {
 	}
 	files = append(files, a.getFiles(main)...)*/
 
-	a.execBatch(db, a.getCreateNodesFnsBatch(db, functions))
-	//a.execBatch(db, a.getCreateNodesFilesBatch(db, files))
+	a.execBatch(a.getCreateNodesFnsBatch(functions))
+	//a.execBatch((a.db, a.getCreateNodesFilesBatch( files))
 
-	a.runCypher(db, `CREATE INDEX on :function(name)`, nil)
-	a.runCypher(db, `CREATE INDEX on :file(name)`, nil)
+	a.runCypher(`CREATE INDEX on :function(name)`, nil)
+	a.runCypher(`CREATE INDEX on :file(name)`, nil)
 
-	a.execBatch(db, a.getCreateEdgesCalledBatch(db, functions))
-	//a.execBatch(db, a.getCreateEdgesBelongsToBatch(db, functions))
+	a.execBatch(a.getCreateEdgesCalledBatch(functions))
+	//a.execBatch((a.db, a.getCreateEdgesBelongsToBatch(functions))
 
-	a.runCypher(db, `CREATE INDEX on :called(time_sec)`, nil)
-	a.runCypher(db, `CREATE INDEX on :called(memory_kB)`, nil)
+	a.runCypher(`CREATE INDEX on :called(time_sec)`, nil)
+	a.runCypher(`CREATE INDEX on :called(memory_kB)`, nil)
 }
 
-func (a *Neo4jAnalyzer) execBatch(db *neoism.Database, batch []*neoism.CypherQuery) {
-	for i := 0; i < len(batch); i += 1000 {
-		end := i + 1000
-
-		if end > len(batch) {
-			end = len(batch)
-		}
-
-		if err := db.CypherBatch(batch[i:end]); err != nil {
-			log.Println(err.Error())
-		}
+func (a *Neo4jAnalyzer) execBatch(batch []*neo4j.CypherStatement) {
+	res, err := a.db.ExecuteBatch(batch)
+	if err != nil {
+		log.Println(err.Error())
 	}
+
+	if len(res.Errors) > 0 {
+		log.Println(res.Errors)
+	}
+
 }
 
-func (a *Neo4jAnalyzer) runCypher(db *neoism.Database, query string, args map[string]interface{}) {
-	if err := db.Cypher(&neoism.CypherQuery{
+func (a *Neo4jAnalyzer) runCypher(query string, args neo4j.CypherParameters) {
+	res, err := a.db.Execute(&neo4j.CypherStatement{
 		Statement:  query,
 		Parameters: args,
-	}); err != nil {
+	})
+
+	if err != nil {
 		panic(err.Error())
 	}
+
+	if len(res.Errors) > 0 {
+		log.Println(res.Errors)
+	}
+}
+
+func (a *Neo4jAnalyzer) getCypherResult(query string, args neo4j.CypherParameters) neo4j.ExecuteResult {
+	cypher := &neo4j.CypherStatement{
+		Statement:  query,
+		Parameters: args,
+	}
+
+	res, err := a.db.Execute(cypher)
+
+	if err != nil {
+		panic(err.Error())
+	}
+
+	return res
 }
 
 func (a *Neo4jAnalyzer) getFunctions(fn cachegrind.Function) []cachegrind.Function {
@@ -111,13 +136,13 @@ func (a *Neo4jAnalyzer) getFiles(fn cachegrind.Function) []cachegrind.Function {
 }
 */
 
-func (a *Neo4jAnalyzer) getCreateNodesFnsBatch(db *neoism.Database, fns []cachegrind.Function) []*neoism.CypherQuery {
-	batch := []*neoism.CypherQuery{}
+func (a *Neo4jAnalyzer) getCreateNodesFnsBatch(fns []cachegrind.Function) []*neo4j.CypherStatement {
+	batch := []*neo4j.CypherStatement{}
 
 	for _, fn := range fns {
-		cypher := &neoism.CypherQuery{
+		cypher := &neo4j.CypherStatement{
 			Statement: `CREATE (:function { name : {fn} })`,
-			Parameters: neoism.Props{
+			Parameters: neo4j.CypherParameters{
 				"fn": fn.GetName(),
 			},
 		}
@@ -147,8 +172,8 @@ func (a *Neo4jAnalyzer) getCreateNodesFilesBatch(db *neoism.Database, files []ca
 }
 */
 
-func (a *Neo4jAnalyzer) getCreateEdgesCalledBatch(db *neoism.Database, fns []cachegrind.Function) []*neoism.CypherQuery {
-	batch := []*neoism.CypherQuery{}
+func (a *Neo4jAnalyzer) getCreateEdgesCalledBatch(fns []cachegrind.Function) []*neo4j.CypherStatement {
+	batch := []*neo4j.CypherStatement{}
 	for _, fn := range fns {
 		for _, called := range fn.GetCalls() {
 			var time int64 = 0
@@ -164,10 +189,10 @@ func (a *Neo4jAnalyzer) getCreateEdgesCalledBatch(db *neoism.Database, fns []cac
 				mem = m
 			}
 
-			cypher := &neoism.CypherQuery{
+			cypher := &neo4j.CypherStatement{
 				Statement: `MATCH (a:function { name : {aFn} }),(b:function { name : {bFn} }) 
 							CREATE (a)-[:called {time_sec: {time}, memory_kB: {memory}, line: {line}}]->(b)`,
-				Parameters: neoism.Props{
+				Parameters: neo4j.CypherParameters{
 					"aFn":    fn.GetName(),
 					"bFn":    called.GetFunction().GetName(),
 					"time":   float64(time) / 1000 / 1000,
@@ -200,4 +225,36 @@ func (a *Neo4jAnalyzer) getCreateEdgesBelongsToBatch(db *neoism.Database, fns []
 	}
 
 	return batch
+}
+
+type TopCall struct {
+	From string `json:"from`
+}
+
+func (a *Neo4jAnalyzer) GetTopNPrefixCalls(n int, prefix string) interface{} {
+	res := a.getCypherResult(`MATCH p = (s:function)-[c:called]->(e:function)
+			WHERE s.name =~ {prefix}
+			WITH collect({
+				from: s.name,
+				from_id: id(s),
+				to: e.name,
+				to_id: id(e),
+				time_sec: c.time_sec,
+				memory_kB: c.memory_kB,
+				line: c.line
+				})[..{n}] as r, c
+			ORDER BY c.time_sec DESC
+			RETURN r
+	`, neo4j.CypherParameters{
+		"prefix": prefix + ".*",
+		"n":      n,
+	})
+
+	return res.Map("r", func(rowValue interface{}, meta neo4j.CypherQueryResultValueMeta) interface{} {
+		row := rowValue.([]interface{})
+		rowMp := row[0].(map[string]interface{})
+		return TopCall{
+			From: rowMp["from"].(string),
+		}
+	})
 }

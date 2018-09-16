@@ -11,4 +11,5 @@ const (
 
 type CachegrindAnalyzer interface {
 	Init(c cachegrind.Cachegrind)
+	GetTopNPrefixCalls(n int, prefix string) interface{}
 }

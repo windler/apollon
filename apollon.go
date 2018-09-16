@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"html/template"
+	"net/http"
 	"os"
 
 	"github.com/windler/apollon/analyzer"
@@ -34,6 +36,13 @@ func main() {
 
 	initOutputTemplate()
 	createAnalyzer(shell)
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		res := ana.GetTopNPrefixCalls(5, "App")
+		json.NewEncoder(w).Encode(res)
+	})
+
+	http.ListenAndServe(":8082", nil)
 }
 
 func initOutputTemplate() {
@@ -50,9 +59,9 @@ type callOutput struct {
 }
 
 func createAnalyzer(shell *ishell.Shell) {
-	scheme := flag.String("scheme", "http", "neo4j scheme")
+	scheme := flag.String("scheme", "http://", "neo4j scheme")
 	host := flag.String("host", "localhost", "neo4j host")
-	port := flag.Int("port", 7474, "neo4j port")
+	port := flag.Int64("port", 7474, "neo4j port")
 	username := flag.String("user", "neo4j", "neo4j user")
 	pw := flag.String("password", "neo4j", "neo4j password")
 
@@ -60,7 +69,7 @@ func createAnalyzer(shell *ishell.Shell) {
 
 	pb := shell.ProgressBar()
 	pb.Indeterminate(true)
-	pb.Prefix("Creating database... ")
+	pb.Prefix("Parsing file... ")
 	pb.Start()
 
 	if _, err := os.Stat(file); err != nil {
@@ -72,6 +81,13 @@ func createAnalyzer(shell *ishell.Shell) {
 		panic(err.Error())
 	}
 
+	pb.Stop()
+
+	pb = shell.ProgressBar()
+	pb.Indeterminate(true)
+	pb.Prefix("Creating database... ")
+	pb.Start()
+
 	ana = &analyzer.Neo4jAnalyzer{
 		Host:     *host,
 		Password: *pw,
@@ -80,7 +96,5 @@ func createAnalyzer(shell *ishell.Shell) {
 		Scheme:   *scheme,
 	}
 	ana.Init(cg)
-
-	pb.Suffix(" Done!")
 	pb.Stop()
 }
